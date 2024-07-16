@@ -1,0 +1,11 @@
+[package]
+name = "radiance-cascades-wip"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+bevy = { version = "0.14", features = ["file_watcher"] }
+
+ [lints.rust]
+unexpected_cfgs = { level = "allow" }
