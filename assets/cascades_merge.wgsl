@@ -85,16 +85,6 @@ fn angle_pos(angle_index: u32) -> vec2u {
     );
 }
 
-fn read_for_cascade(location: vec2u) -> vec4f {
-    // not sure why -2?
-    // I might be wasting a whole cascade…
-    if params.cascade < globals.num_cascades - 2 {
-        return textureLoad(cascade_merge_input, location);
-    } else {
-        return textureLoad(cascades, location);
-    }
-}
-
 @compute @workgroup_size(8, 8, 1)
 fn cascades_merge_m1(@builtin(global_invocation_id) invocation_id: vec3u) {
     let probe_index = invocation_id.xy;
@@ -130,25 +120,25 @@ fn cascades_merge_m1(@builtin(global_invocation_id) invocation_id: vec3u) {
     let ratio = next_cascade.num_angles / this_cascade.num_angles;
     for(var i=0u; i < this_cascade.num_angles; i++) {
         let this_probe_angle = this_probe + angle_pos(i);
-        var combined = textureLoad(cascades, this_probe_angle);
 
-        // don't need to combine denisty?
-        let incoming_transmittance = combined.a;
         var from_next = vec3f(0.);
-        for(var j=0u; j < ratio; j++) {
-            let jidx = (i*ratio + j + next_cascade.num_angles ) % next_cascade.num_angles;
-            // read the same ray angle from 4 spatial neighbors
-            // TODO: are the angles offset ok? should they be interpolated?
-            let next_angle_pos = angle_pos(jidx);
-            // it'd be nice to rearrange the cascades (or just merge?) to support hw interpolation
-            from_next += incoming_transmittance * (
-                blend_0 * read_for_cascade(next_probe_0 + next_angle_pos).rgb +
-                blend_1 * read_for_cascade(next_probe_1 + next_angle_pos).rgb +
-                blend_2 * read_for_cascade(next_probe_2 + next_angle_pos).rgb +
-                blend_3 * read_for_cascade(next_probe_3 + next_angle_pos).rgb
-            );
+        if params.cascade < globals.num_cascades - 1 {
+            for(var j=0u; j < ratio; j++) {
+                let jidx = (i*ratio + j + next_cascade.num_angles ) % next_cascade.num_angles;
+                // read the same ray angle from 4 spatial neighbors
+                // TODO: are the angles offset ok? should they be interpolated?
+                let next_angle_pos = angle_pos(jidx);
+                // it'd be nice to rearrange the cascades (or just merge?) to support hw interpolation
+                from_next += (
+                    blend_0 * textureLoad(cascade_merge_input, next_probe_0 + next_angle_pos).rgb +
+                    blend_1 * textureLoad(cascade_merge_input, next_probe_1 + next_angle_pos).rgb +
+                    blend_2 * textureLoad(cascade_merge_input, next_probe_2 + next_angle_pos).rgb +
+                    blend_3 * textureLoad(cascade_merge_input, next_probe_3 + next_angle_pos).rgb
+                );
+            }
         }
-        combined += vec4(from_next, 0.);
+        var combined = textureLoad(cascades, this_probe_angle);
+        combined += combined.a * vec4(from_next, 0.);
 
         textureStore(cascade_merge_output, this_probe_angle, combined);
     }
