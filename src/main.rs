@@ -56,6 +56,14 @@ fn auto_init_vis_buffers(mut commands: Commands,
     for (entity, buffers) in &buffers {
         commands.entity(entity).insert(QuickAndDirtyPreviewAddedMarker);
 
+        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 1 , y: 0 },
+            materials.add(PreviewMaterial {
+                // debug view of merged cascades
+                texture: buffers.merge[0].clone_weak(),
+                mode: 1,
+            }),
+        ));
+
         commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0 , y: 0 },
             materials.add(PreviewMaterial {
                 // debug view of merged cascades
