@@ -1,4 +1,4 @@
-# Flatlang Radiance Cascades — very vanilla implementation
+# Flatland Radiance Cascades — very vanilla implementation
 
 Simulates lights in 2D scenes, with soft shadows.
 
@@ -16,7 +16,9 @@ See `src/cascades.rs` and `cascades_*.wgsl` shaders in `assets/`.
 ## Links
 
 * [what are Radiance Cascades anyway?](https://www.youtube.com/watch?v=3so7xdZHKxw)
-* [the paper](https://drive.google.com/file/d/1L6v1_7HY2X-LV3Ofb6oyTIxgEaP4LOI6/view?usp=sharing)
+* [the paper][paper]
 * [shadertoy impl](https://www.shadertoy.com/view/mtlBzX)
 * [geometry debug](https://tmpvar.com/poc/radiance-cascades/)
 * [vis for v2 improvements](https://www.shadertoy.com/view/4clcWn)
+
+[paper]: https://drive.google.com/file/d/1L6v1_7HY2X-LV3Ofb6oyTIxgEaP4LOI6/view?usp=sharing
