@@ -8,7 +8,7 @@
 @group(1) @binding(2) var cascade_merge_input: texture_storage_2d<rgba32float, read>;
 
 @compute @workgroup_size(8, 8, 1)
-fn cascades_merge_fin(@builtin(global_invocation_id) invocation_id: vec3u) {
+fn cascades_merge_m0(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
 
     let stride = vec2(
@@ -43,24 +43,22 @@ fn cascades_merge_fin(@builtin(global_invocation_id) invocation_id: vec3u) {
     textureStore(cascade_merge_output, output_location, rays / f32(globals.initial_angles * 4));
 }
 
-struct MergingProbe {
+struct UnmergedCascadeProbe {
     storage_location: vec2u,
     stride: vec2u,
     num_angles: u32,
 }
 
-fn cascade_probe_spacing(cascade: u32) -> MergingProbe {
-    var num_angles: u32;
+fn cascade_probe_spacing(cascade: u32) -> UnmergedCascadeProbe {
+    let num_angles = globals.initial_angles << (cascade * globals.branching_factor);
     var stride: vec2u;
     if globals.branching_factor == 1 {
-        num_angles = globals.initial_angles << (cascade * globals.branching_factor);
         stride = vec2(
             PROBE_STORAGE_COLUMN_WIDTH,
             num_angles / PROBE_STORAGE_COLUMN_WIDTH, // TODO: inaccurate for larger branching factors
         );
     } else {
-        let num_angles_sqrt = globals.initial_angles << cascade;
-        num_angles = num_angles_sqrt * num_angles_sqrt;
+        let num_angles_sqrt = globals.initial_angles << (cascade * (globals.branching_factor/2));
         stride = vec2(num_angles_sqrt);
     }
 
@@ -74,7 +72,7 @@ fn cascade_probe_spacing(cascade: u32) -> MergingProbe {
         }
     }
 
-    return MergingProbe(vec2u(cascade_storage_offset_x, 0), stride, num_angles);
+    return UnmergedCascadeProbe(vec2u(cascade_storage_offset_x, 0), stride, num_angles);
 }
 
 fn angle_pos(angle_index: u32) -> vec2u {

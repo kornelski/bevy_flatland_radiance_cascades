@@ -118,7 +118,7 @@ struct CascadesRenderPipeline {
     /// Merge N+1 into N
     merge_pipeline_m1: CachedComputePipelineId,
     /// Cascade 0 gets special treatment
-    merge_pipeline_fin: CachedComputePipelineId,
+    merge_pipeline_m0: CachedComputePipelineId,
 }
 
 pub(crate) struct CascadesComputePlugin;
@@ -271,9 +271,9 @@ impl FromWorld for CascadesRenderPipeline {
         });
 
         let shader = world.load_asset("cascades_merge.wgsl");
-        let merge_pipeline_fin = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
-            label: Some("cascades_merge_fin".into()),
-            entry_point: "cascades_merge_fin".into(),
+        let merge_pipeline_m0 = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("cascades_merge_m0".into()),
+            entry_point: "cascades_merge_m0".into(),
             layout: vec![group0_layout.clone(), merge_group1_layout.clone()],
             push_constant_ranges: Vec::new(),
             shader: shader.clone(),
@@ -310,7 +310,7 @@ impl FromWorld for CascadesRenderPipeline {
             merge_group1_layout,
             trace_pipeline,
             merge_pipeline_m1,
-            merge_pipeline_fin,
+            merge_pipeline_m0,
         }
     }
 }
@@ -484,7 +484,7 @@ impl render_graph::Node for CascadesRenderNode {
         if !self.ready {
             let Some(pipeline) = render_world.get_resource::<CascadesRenderPipeline>() else { return };
             let pipeline_cache = render_world.resource::<PipelineCache>();
-            for p in [pipeline.trace_pipeline, pipeline.merge_pipeline_m1] {
+            for p in [pipeline.trace_pipeline, pipeline.merge_pipeline_m1, pipeline.merge_pipeline_m0] {
                 match pipeline_cache.get_compute_pipeline_state(p) {
                     CachedPipelineState::Ok(_) => {},
                     CachedPipelineState::Err(err) => panic!("{err}"),
@@ -523,7 +523,7 @@ impl render_graph::Node for CascadesRenderNode {
 
         let trace_pipeline = pipeline_cache.get_compute_pipeline(pipeline.trace_pipeline).unwrap();
         let merge_pipeline_m1 = pipeline_cache.get_compute_pipeline(pipeline.merge_pipeline_m1).unwrap();
-        let merge_pipeline_fin = pipeline_cache.get_compute_pipeline(pipeline.merge_pipeline_fin).unwrap();
+        let merge_pipeline_m0 = pipeline_cache.get_compute_pipeline(pipeline.merge_pipeline_m0).unwrap();
 
         let mut pass = render_context.command_encoder()
             .begin_compute_pass(&ComputePassDescriptor {
@@ -553,7 +553,7 @@ impl render_graph::Node for CascadesRenderNode {
                 pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
             }
 
-            pass.set_pipeline(merge_pipeline_fin);
+            pass.set_pipeline(merge_pipeline_m0);
             pass.set_bind_group(1, &buffers_bind.merge_bind_groups[1], &[]);
             let dispatch = cascade_storage_size(0, settings) / WORKGROUP_SIZE;
             pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
