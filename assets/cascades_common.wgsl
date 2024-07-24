@@ -19,3 +19,7 @@ struct CascadesParams {
 
 /// Just the aspect ratio of the cascades' internal layout
 const PROBE_STORAGE_COLUMN_WIDTH: u32 = #{PROBE_STORAGE_COLUMN_WIDTH};
+
+/// 1<<BRANCHING_FACTOR times more angles per cascade
+/// 1 gives doubling, 2 gives quadrupling.
+const BRANCHING_FACTOR: u32 = #{BRANCHING_FACTOR};

@@ -4,11 +4,11 @@ Simulates lights in 2D scenes, with soft shadows.
 
 Unfinished, buggy. I'm a noob in shader graphics, and don't quite know what I'm doing. Based on Rust/Bevy.
 
- - no pre-averaging (yet)
+ - it implements "pre-averaging", although the trace step is still separate
  - no bilinear fix
  - no mipmaps
  - no SDFs even (naively marches density map)
- - no proper bounce light (can this even work without SDFs?)
+ - no bounce light (can this even work without SDFs?)
  - 2x ray growth factor, not 4x, because that's what the paper promised!
 
 See `src/cascades.rs` and `cascades_*.wgsl` shaders in `assets/`.

@@ -14,11 +14,10 @@ use crate::MousePosition;
 use crate::render::renderer::RenderQueue;
 use bevy::prelude::*;
 use bevy::render::extract_component::ExtractComponent;
-use bevy::render::render_resource::binding_types::texture_storage_2d;
+use bevy::render::render_resource::binding_types::{texture_storage_2d, uniform_buffer};
 use bevy::render::{self, RenderSet};
 use bevy::render::texture::GpuImage;
 use bevy::render::renderer::{RenderContext, RenderDevice};
-use bevy::render::render_resource::binding_types::uniform_buffer;
 use bevy::render::render_resource::*;
 use bevy::render::render_graph::{self, RenderGraph, RenderGraphContext, RenderLabel};
 use bevy::render::render_asset::{RenderAssetUsages, RenderAssets};
@@ -67,8 +66,6 @@ struct CascadesSettingsUniform {
     initial_angles: u32,
     /// number of pixels per probe in cascade 0
     initial_spacing: u32,
-    /// 1, or it's buggy
-    branching_factor: u32,
     /// resolution
     world_size: UVec2,
     /// resets every 1h
@@ -101,9 +98,9 @@ struct CascadesRenderPipeline {
     /// Uniforms
     group0_layout: BindGroupLayout,
     /// Buffers for ray marching
-    trace_group1_layout: BindGroupLayout,
+    trace_group_layout: BindGroupLayout,
     /// Buffers for merging
-    merge_group1_layout: BindGroupLayout,
+    merge_group_layout: BindGroupLayout,
 
     /// The GPU buffer that stores the [`CascadesSettingsUniform`] data.
     settings_shared_uniforms_buffer: DynamicUniformBuffer<CascadesSettingsUniform>,
@@ -119,6 +116,8 @@ struct CascadesRenderPipeline {
     merge_pipeline_m1: CachedComputePipelineId,
     /// Cascade 0 gets special treatment
     merge_pipeline_m0: CachedComputePipelineId,
+    /// Cascade 0 gets special treatment
+    merge_pipeline_first: CachedComputePipelineId,
 }
 
 pub(crate) struct CascadesComputePlugin;
@@ -198,7 +197,6 @@ fn render_app_prepare_cascades_settings_uniforms(
             num_cascades: NUM_CASCADES as _,
             initial_angles: INITIAL_ANGLES,
             initial_spacing: INITIAL_SPACING,
-            branching_factor: BRANCHING_FACTOR,
             world_size: cascades_settings.size,
             time,
             delta_time,
@@ -241,14 +239,14 @@ impl FromWorld for CascadesRenderPipeline {
             )),
         );
 
-        let trace_group1_layout = render_device.create_bind_group_layout("g1",
+        let trace_group_layout = render_device.create_bind_group_layout("tg1",
             &BindGroupLayoutEntries::sequential(ShaderStages::COMPUTE, (
                 texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::WriteOnly),
                 texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::ReadOnly),
             )),
         );
 
-        let merge_group1_layout = render_device.create_bind_group_layout("g1",
+        let merge_group_layout = render_device.create_bind_group_layout("mg1",
             &BindGroupLayoutEntries::sequential(ShaderStages::COMPUTE, (
                 texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::WriteOnly),
                 texture_storage_2d(TextureFormat::Rgba32Float, StorageTextureAccess::ReadOnly),
@@ -259,12 +257,13 @@ impl FromWorld for CascadesRenderPipeline {
         // naga_oil preprocessor
         let shader_defs = vec![
             ShaderDefVal::UInt("PROBE_STORAGE_COLUMN_WIDTH".into(), PROBE_STORAGE_COLUMN_WIDTH),
+            ShaderDefVal::UInt("BRANCHING_FACTOR".into(), BRANCHING_FACTOR),
         ];
 
         let trace_pipeline = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("cascades_trace".into()),
             entry_point: "cascades_trace".into(),
-            layout: vec![group0_layout.clone(), trace_group1_layout.clone()],
+            layout: vec![group0_layout.clone(), trace_group_layout.clone()],
             push_constant_ranges: Vec::new(),
             shader: world.load_asset("cascades_trace.wgsl"),
             shader_defs: shader_defs.clone(),
@@ -274,7 +273,15 @@ impl FromWorld for CascadesRenderPipeline {
         let merge_pipeline_m0 = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("cascades_merge_m0".into()),
             entry_point: "cascades_merge_m0".into(),
-            layout: vec![group0_layout.clone(), merge_group1_layout.clone()],
+            layout: vec![group0_layout.clone(), merge_group_layout.clone()],
+            push_constant_ranges: Vec::new(),
+            shader: shader.clone(),
+            shader_defs: shader_defs.clone(),
+        });
+        let merge_pipeline_first = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("cascades_merge_first".into()),
+            entry_point: "cascades_merge_first".into(),
+            layout: vec![group0_layout.clone(), merge_group_layout.clone()],
             push_constant_ranges: Vec::new(),
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
@@ -282,7 +289,7 @@ impl FromWorld for CascadesRenderPipeline {
         let merge_pipeline_m1 = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("cascades_merge_m1".into()),
             entry_point: "cascades_merge_m1".into(),
-            layout: vec![group0_layout.clone(), merge_group1_layout.clone()],
+            layout: vec![group0_layout.clone(), merge_group_layout.clone()],
             push_constant_ranges: Vec::new(),
             shader,
             shader_defs,
@@ -306,10 +313,11 @@ impl FromWorld for CascadesRenderPipeline {
             params_shared_uniforms_buffer,
             params_shared_uniforms_buffer_offsets: [0; NUM_CASCADES],
             group0_layout,
-            trace_group1_layout,
-            merge_group1_layout,
+            trace_group_layout,
+            merge_group_layout,
             trace_pipeline,
             merge_pipeline_m1,
+            merge_pipeline_first,
             merge_pipeline_m0,
         }
     }
@@ -328,43 +336,50 @@ fn attach_buffers_to_settings(mut commands: Commands,
 
     let images = &mut *images; // ResMut
     for (entity, settings) in missing_buffers.iter() {
-
-        // calculate sizes of buffers for the settings
-        let cascade_m0 = cascade_storage_size(0, settings);
-
         // rest keeps same height for visualization consistency, but needs to cram into
         // variable number of columns
-        let cascade_m1_width: u32 = (1..NUM_CASCADES as u32).map(|n| {
-            dbg!(cascade_storage_size(n, settings)).x
-        }).sum();
+        let cascade_trace_size = (0..NUM_CASCADES as u32)
+            .map(|c| {
+                let size = cascade_storage_size(c, settings);
+                eprintln!("trace buffer cascade={c}; {size:?}");
+                size
+            })
+            .fold(UVec2::new(0,0), |max, m| max.max(m));
 
-        let cascade_m = [cascade_m0, UVec2::new(cascade_m0.x.max(cascade_m1_width), cascade_m0.y)].map(|size| {
-            let mut traces = Image::new(
-                Extent3d {
-                    width: size.x,
-                    height: size.y,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                vec![0; (16 * size.x * size.y) as usize],
-                TextureFormat::Rgba32Float,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            // texture binding is for debug only
-            traces.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
-            images.add(traces)
+        let mut cascade_trace = Image::new(
+            Extent3d {
+                width: cascade_trace_size.x,
+                height: cascade_trace_size.y,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![0; (16 * cascade_trace_size.x * cascade_trace_size.y) as usize],
+            TextureFormat::Rgba32Float,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        // texture binding is for debug only
+        cascade_trace.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+        let cascade_trace = images.add(cascade_trace);
+
+        let merge_buffer_size = (0..NUM_CASCADES as u32).map(|c| {
+            let m = merge_buffer_sizes(c, settings);
+            let size = m.num_probes * m.num_angles_sqrt;
+            eprintln!("merge buffer cascade={c}; {:?} probes * {}^2 = {size:?}", m.num_probes, m.num_angles_sqrt);
+            size
+        }).fold(UVec2::new(0,0), |max, m| {
+            max.max(m)
         });
 
         // one of these could be smaller for cascade 1+ only.
         let merge = array::from_fn(|_| {
             let mut merge = Image::new(
                 Extent3d {
-                    width: cascade_m0.x,
-                    height: cascade_m0.y,
+                    width: merge_buffer_size.x,
+                    height: merge_buffer_size.y,
                     depth_or_array_layers: 1,
                 },
                 TextureDimension::D2,
-                vec![0; (16 * cascade_m0.x * cascade_m0.y) as usize],
+                vec![0; (16 * merge_buffer_size.x * merge_buffer_size.y) as usize],
                 TextureFormat::Rgba32Float,
                 RenderAssetUsages::RENDER_WORLD,
             );
@@ -374,7 +389,7 @@ fn attach_buffers_to_settings(mut commands: Commands,
         });
 
         commands.entity(entity).insert(CascadesBuffersComponent {
-            cascade_m,
+            cascade_trace,
             merge,
         });
     }
@@ -415,58 +430,45 @@ fn render_app_prepare_bind_groups(
     pipeline: Res<CascadesRenderPipeline>,
 ) {
     for (e, buffers) in &mut buffers {
-        let [m0, m1] = buffers.cascade_m.each_ref().map(|b| gpu_images.get(b).unwrap());
+        let cascade_trace = gpu_images.get(&buffers.cascade_trace).unwrap();
         let [merge_a, merge_b] = buffers.merge.each_ref().map(|b| gpu_images.get(b).unwrap());
 
-        let trace_m0_bind_group = render_device.create_bind_group("m0", &pipeline.trace_group1_layout, &BindGroupEntries::sequential((
-            &m0.texture_view,
+        let trace_bind_group = render_device.create_bind_group("m0", &pipeline.trace_group_layout, &BindGroupEntries::sequential((
+            &cascade_trace.texture_view,
             &merge_a.texture_view,
         )));
-        let trace_m1_bind_group = render_device.create_bind_group("m1", &pipeline.trace_group1_layout, &BindGroupEntries::sequential((
-            &m1.texture_view,
+        let merge_a_bind_group = render_device.create_bind_group("mma", &pipeline.merge_group_layout, &BindGroupEntries::sequential((
             &merge_a.texture_view,
-        )));
-
-        let merge_m0_bind_group = render_device.create_bind_group("mm0", &pipeline.merge_group1_layout, &BindGroupEntries::sequential((
-            &merge_a.texture_view,
-            &m0.texture_view,
+            &cascade_trace.texture_view,
             &merge_b.texture_view,
         )));
-        let merge_a_bind_group = render_device.create_bind_group("mma", &pipeline.merge_group1_layout, &BindGroupEntries::sequential((
-            &merge_a.texture_view,
-            &m1.texture_view,
+        let merge_b_bind_group = render_device.create_bind_group("mmb", &pipeline.merge_group_layout, &BindGroupEntries::sequential((
             &merge_b.texture_view,
-        )));
-        let merge_b_bind_group = render_device.create_bind_group("mmb", &pipeline.merge_group1_layout, &BindGroupEntries::sequential((
-            &merge_b.texture_view,
-            &m1.texture_view,
+            &cascade_trace.texture_view,
             &merge_a.texture_view,
         )));
         commands.entity(e).insert(CascadesRenderImagesBindGroupsComponent {
-            trace_bind_groups: [trace_m0_bind_group, trace_m1_bind_group],
+            trace_bind_group,
             merge_bind_groups: [merge_a_bind_group, merge_b_bind_group],
-            merge_m0_bind_group,
         });
     }
 }
 
 #[derive(Debug, Component, ExtractComponent, Clone)]
 pub struct CascadesBuffersComponent {
-    // First cascade is as large as the input,
-    // then all remaining cascades fit in a second buffer (this assumes 2x branching, not 4x)
-    //
-    // There is no pre-averaging in this implementation (yet).
-    pub cascade_m: [Handle<Image>; 2],
+    /// Buffer for traced rays, as large as the largest cascade
+    /// stored position-first
+    pub cascade_trace: Handle<Image>,
 
-    // for gathering cascades
+    /// for gathering merged cascades,
+    /// direction-first
     pub merge: [Handle<Image>; 2],
 }
 
 #[derive(Component)]
 struct CascadesRenderImagesBindGroupsComponent {
-    trace_bind_groups: [BindGroup; 2],
+    trace_bind_group: BindGroup,
     merge_bind_groups: [BindGroup; 2],
-    merge_m0_bind_group: BindGroup,
 }
 
 /// One node renders all instances, so it keeps a query for the instances
@@ -522,6 +524,7 @@ impl render_graph::Node for CascadesRenderNode {
         );
 
         let trace_pipeline = pipeline_cache.get_compute_pipeline(pipeline.trace_pipeline).unwrap();
+        let merge_pipeline_first = pipeline_cache.get_compute_pipeline(pipeline.merge_pipeline_first).unwrap();
         let merge_pipeline_m1 = pipeline_cache.get_compute_pipeline(pipeline.merge_pipeline_m1).unwrap();
         let merge_pipeline_m0 = pipeline_cache.get_compute_pipeline(pipeline.merge_pipeline_m0).unwrap();
 
@@ -532,33 +535,43 @@ impl render_graph::Node for CascadesRenderNode {
             });
 
         for (buffers_bind, uniform_offset, settings) in self.view_query.iter_manual(render_world) {
-            pass.set_pipeline(trace_pipeline);
-            for (params, params_offset) in pipeline.params_shared_template.iter().zip(pipeline.params_shared_uniforms_buffer_offsets) {
+            let mut first_merge = true;
+            for (params, params_offset) in pipeline.params_shared_template.iter().zip(pipeline.params_shared_uniforms_buffer_offsets).rev() {
+                pass.set_pipeline(trace_pipeline);
                 pass.set_bind_group(0, &settings_bind, &[uniform_offset.0, params_offset]);
-                pass.set_bind_group(1, &buffers_bind.trace_bind_groups[if params.cascade == 0 { 0 } else { 1 }], &[]);
-                let dispatch = cascade_storage_size(params.cascade, settings) / WORKGROUP_SIZE;
+                pass.set_bind_group(1, &buffers_bind.trace_bind_group, &[]);
+                let dispatch = (cascade_storage_size(params.cascade, settings)  + (WORKGROUP_SIZE-1)) / WORKGROUP_SIZE;
                 pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
-            }
 
-            pass.set_pipeline(merge_pipeline_m1);
-            for (params, params_offset) in pipeline.params_shared_template.iter().zip(pipeline.params_shared_uniforms_buffer_offsets).rev().skip(1) {
-                pass.set_bind_group(0, &settings_bind, &[uniform_offset.0, params_offset]);
-                pass.set_bind_group(1, if params.cascade > 0 {
-                    &buffers_bind.merge_bind_groups[(params.cascade & 1) as usize]
-                } else {
-                    &buffers_bind.merge_m0_bind_group
-                }, &[]);
-                // dispatched per probe, not per angle
-                let dispatch = ((settings.size / INITIAL_SPACING) >> params.cascade) / WORKGROUP_SIZE;
+                pass.set_pipeline(if first_merge { first_merge = false; merge_pipeline_first } else { merge_pipeline_m1 });
+                pass.set_bind_group(1, &buffers_bind.merge_bind_groups[((params.cascade) & 1) as usize] , &[]);
+                let msize = merge_buffer_sizes(params.cascade, settings);
+                let dispatch = (msize.num_probes * msize.num_angles_sqrt + (WORKGROUP_SIZE-1)) / WORKGROUP_SIZE;
                 pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
             }
 
             pass.set_pipeline(merge_pipeline_m0);
             pass.set_bind_group(1, &buffers_bind.merge_bind_groups[1], &[]);
-            let dispatch = cascade_storage_size(0, settings) / WORKGROUP_SIZE;
+            let msize = merge_buffer_sizes(0, settings);
+            let dispatch = (msize.num_probes * msize.num_angles_sqrt + (WORKGROUP_SIZE-1)) / WORKGROUP_SIZE;
             pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
         }
 
         Ok(())
+    }
+}
+
+struct MergeBufferSizes {
+    num_angles_sqrt: u32,
+    num_probes: UVec2,
+}
+
+fn merge_buffer_sizes(cascade: u32, settings: &CascadesSettingsComponent) -> MergeBufferSizes {
+    let num_angles_sqrt = ((INITIAL_ANGLES << (cascade * BRANCHING_FACTOR)) as f32).sqrt().ceil() as u32;
+    let num_probes = ((settings.size / INITIAL_SPACING) >> cascade);
+        // + (3 + cascade * 3); // hacky hack
+    MergeBufferSizes {
+        num_angles_sqrt,
+        num_probes,
     }
 }

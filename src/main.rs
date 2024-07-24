@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::render;
 
-const WINDOW_SIZE: UVec2 = UVec2::new(1280, 1280);
+const WINDOW_SIZE: UVec2 = UVec2::new(1920, 1080);
 
 mod cascades;
 use cascades::*;
@@ -56,14 +56,6 @@ fn auto_init_vis_buffers(mut commands: Commands,
     for (entity, buffers) in &buffers {
         commands.entity(entity).insert(QuickAndDirtyPreviewAddedMarker);
 
-        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 1 , y: 0 },
-            materials.add(PreviewMaterial {
-                // debug view of merged cascades
-                texture: buffers.merge[0].clone_weak(),
-                mode: 1,
-            }),
-        ));
-
         commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0 , y: 0 },
             materials.add(PreviewMaterial {
                 // debug view of merged cascades
@@ -72,20 +64,21 @@ fn auto_init_vis_buffers(mut commands: Commands,
             }),
         ));
 
-        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0, y: 1 },
+        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 1 , y: 0 },
             materials.add(PreviewMaterial {
-                // debug view of cascade 0
-                texture: buffers.cascade_m[0].clone_weak(),
+                // debug view of merged cascades
+                texture: buffers.merge[0].clone_weak(),
                 mode: 0,
             }),
         ));
 
-        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 1, y: 1 },
+        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0, y: 1 },
             materials.add(PreviewMaterial {
                 // debug view of cascade 1
-                texture: buffers.cascade_m[1].clone_weak(),
+                texture: buffers.cascade_trace.clone_weak(),
                 mode: 0,
             }),
         ));
+
     }
 }

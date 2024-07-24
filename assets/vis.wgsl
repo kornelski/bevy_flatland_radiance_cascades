@@ -13,7 +13,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4f {
     if mode == 0 {
         val = vec2(max(data.b, max(data.r, data.g)), data.a);
     } else {
-        return vec4(sqrt((vec3f(0.001)+data.rgb) * data.a), 1.);
+        return vec4(pow((vec3f(0.001)+data.rgb) * data.a, vec3f(1./2.4)), 1.);
     }
     let a = abs(val);
     return vec4(max(a.r, a.g)*0.1, val, 1.);

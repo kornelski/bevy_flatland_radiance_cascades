@@ -1,4 +1,4 @@
-#import "cascades_common.wgsl"::{CascadesGlobals, CascadesParams, PROBE_STORAGE_COLUMN_WIDTH};
+#import "cascades_common.wgsl"::{CascadesGlobals, CascadesParams, BRANCHING_FACTOR, PROBE_STORAGE_COLUMN_WIDTH};
 
 @group(0) @binding(0) var<uniform> globals: CascadesGlobals;
 @group(0) @binding(1) var<uniform> params: CascadesParams;
@@ -8,7 +8,7 @@
 
 struct Probe {
     world_location: vec2f,
-    storage_location: vec2u,
+    probe_index: vec2u,
     angle_index: u32,
     // theta, in radians
     angle: f32,
@@ -18,8 +18,8 @@ struct Probe {
 fn probe_for_invocation_id(probe_angle_index: vec2u) -> Probe {
     var num_angles: u32;
     var stride: vec2u;
-    if globals.branching_factor == 1 {
-        num_angles = globals.initial_angles << (params.cascade * globals.branching_factor);
+    if BRANCHING_FACTOR == 1 {
+        num_angles = globals.initial_angles << (params.cascade * BRANCHING_FACTOR);
         stride = vec2(
             PROBE_STORAGE_COLUMN_WIDTH,
             num_angles / PROBE_STORAGE_COLUMN_WIDTH, // TODO: inaccurate for larger branching factors
@@ -39,8 +39,15 @@ fn probe_for_invocation_id(probe_angle_index: vec2u) -> Probe {
         (probe_angle_index.x & (stride.x - 1)) +
         (probe_angle_index.y & (stride.y - 1)) * stride.x;
 
+    // this may happen when dispatching for larger area
+    let max_index = (globals.world_size / globals.initial_spacing) >> vec2u(params.cascade);
+    if any(probe_index >= max_index) {
+        return Probe(vec2(-1), vec2(0), 0, -1.);
+    }
+
+    // this may happen when dispatching for larger area
     if angle_index >= num_angles {
-        return Probe(vec2(0), vec2(0), 0, 0.); // shouldn't happen
+        return Probe(vec2(-1), vec2(0), 0, -1.);
     }
 
     // the spatial resolution keeps halving
@@ -48,27 +55,7 @@ fn probe_for_invocation_id(probe_angle_index: vec2u) -> Probe {
     let world_location = vec2f(probe_index) * world_spacing
         + vec2f(world_spacing * 0.25); // center the probe within its square
 
-    // cascade 0 gets a full bitmap, and cascades 1+ are vertical slices of the next bitmap
-    var cascade_storage_offset_x = 0u;
-    if params.cascade > 1 {
-        if globals.branching_factor == 1 {
-            let storage_width = globals.world_size.x / globals.initial_spacing * PROBE_STORAGE_COLUMN_WIDTH;
-            cascade_storage_offset_x = storage_width - (storage_width >> (params.cascade - 1u));
-        } else {
-            // buggy
-            cascade_storage_offset_x = params.cascade * (globals.world_size.x / globals.initial_spacing * stride.x);
-        }
-    }
-
-    // intentionally unchanged, except the horizontal shift,
-    // because dispatch IDs should mostly map to storage locations
-    // except for cascade number (m1 and all further cascades are stored in the same buffer)
-    let storage_location = vec2u(
-        probe_angle_index.x + cascade_storage_offset_x,
-        probe_angle_index.y,
-    );
-
-    return Probe(world_location, storage_location, angle_index,
+    return Probe(world_location, probe_index, angle_index,
         index_to_angle(angle_index, num_angles));
 }
 
@@ -131,20 +118,20 @@ fn trace_radiance(probe: Probe, interval_start: f32, interval_len: f32) -> vec4f
             // Previous frame would probably need to keep track of ray directions for that?
 
             // This is the total amount of light at this point, from the previous frame.
-            var fluence = sample_fluence(p);
+            // var fluence = sample_fluence(p);
 
             var scattering = min(density * scattering_coeff, 0.99);
 
-            // TODO: this is terrible, needs a proper SDF of walls
+            // TODO: cascade 0 stoarge format is no longer compatible since I've added pre-merge
             // this means to make walls bounce the light
-            if density > 0.25 {
-                // try to sample the light before a wall
-                fluence = max(fluence, max(sample_fluence(p - direction), sample_fluence(p - step * 0.5)));
-            }
+            // if density > 0.25 {
+            //     // try to sample the light before a wall
+            //     fluence = max(fluence, max(sample_fluence(p - direction), sample_fluence(p - step * 0.5)));
+            // }
 
             // not sure if this should be affected by transmittance, or is that
             // counting transmittance twice, since the previous frame already handled attentuation?
-            radiance += fluence * step_length * scattering;
+            // radiance += fluence * step_length * scattering;
 
             total_transmittance *= transmittance;
 
@@ -164,25 +151,33 @@ fn trace_radiance(probe: Probe, interval_start: f32, interval_len: f32) -> vec4f
 // Each angle is dispatched separately!
 @compute @workgroup_size(8, 8, 1)
 fn cascades_trace(@builtin(global_invocation_id) invocation_id: vec3u) {
-    let probe = probe_for_invocation_id(invocation_id.xy);
+    let storage_location = invocation_id.xy;
+    let probe = probe_for_invocation_id(storage_location);
+
+    // angle=-1 reports out of bounds. this may happen when dispatching for larger area
+    if probe.angle < 0. {
+        textureStore(output, storage_location, vec4f(0.));
+        return;
+    }
 
     // This needs more careful calculation to guarantee angular resolution
-    let start = globals.branching_factor * ((globals.initial_angles << params.cascade) - globals.initial_angles);
-    let end = globals.branching_factor * ((globals.initial_angles << (params.cascade + 1)) - globals.initial_angles);
+    let start = BRANCHING_FACTOR * ((globals.initial_angles << params.cascade) - globals.initial_angles);
+    let end = BRANCHING_FACTOR * ((globals.initial_angles << (params.cascade + 1)) - globals.initial_angles);
 
     let start_longer = ((probe.angle_index / 2) & 1) != 0;
     let end_longer = (probe.angle_index & 1) != 0;
-    let ray_spread = 0.1; // must be < 0.5
+    let ray_scale = 1.; //4. / log2(f32(globals.initial_angles)); //
+    let ray_spread = 0.1 / ray_scale; // must be < 0.5
 
     // // these are staggered to mask the edge between cascades
-    let start_x = select(f32(start)*(1.-ray_spread), f32(start)*(1.+ray_spread), start_longer);
-    let end_x = select(f32(end)*(1.-ray_spread), f32(end)*(1.+ray_spread), end_longer);
+    let start_x = ray_scale * select(f32(start)*(1.-ray_spread), f32(start)*(1.+ray_spread), start_longer);
+    let end_x = ray_scale * select(f32(end)*(1.-ray_spread), f32(end)*(1.+ray_spread), end_longer);
 
     var traced = trace_radiance(probe, start_x, end_x - start_x);
 
     textureStore(
         output,
-        probe.storage_location,
+        storage_location,
         traced,
     );
 }
@@ -220,9 +215,9 @@ fn sample_density(location: vec2f) -> f32 {
     }
 
     if location.x < 300. {
-        return 0.01; // smoke
+        return 0.015; // smoke
     }
-    return 0.;
+    return 0.0025;
 }
 
 // Random garbage for testing.
