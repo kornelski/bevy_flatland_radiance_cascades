@@ -7,5 +7,5 @@ publish = false
 [dependencies]
 bevy = { version = "0.14", features = ["file_watcher"] }
 
- [lints.rust]
+[lints.rust]
 unexpected_cfgs = { level = "allow" }
