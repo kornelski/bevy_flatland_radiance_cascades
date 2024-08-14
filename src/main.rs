@@ -59,7 +59,7 @@ fn auto_init_vis_buffers(mut commands: Commands,
         commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0 , y: 0 },
             materials.add(PreviewMaterial {
                 // debug view of merged cascades
-                texture: buffers.merge[1].clone_weak(),
+                texture: buffers.buffers[1].clone_weak(),
                 mode: 1,
             }),
         ));
@@ -67,18 +67,9 @@ fn auto_init_vis_buffers(mut commands: Commands,
         commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 1 , y: 0 },
             materials.add(PreviewMaterial {
                 // debug view of merged cascades
-                texture: buffers.merge[0].clone_weak(),
+                texture: buffers.buffers[0].clone_weak(),
                 mode: 0,
             }),
         ));
-
-        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0, y: 1 },
-            materials.add(PreviewMaterial {
-                // debug view of cascade 1
-                texture: buffers.cascade_trace.clone_weak(),
-                mode: 0,
-            }),
-        ));
-
     }
 }

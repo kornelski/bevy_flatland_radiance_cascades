@@ -82,10 +82,10 @@ fn merged_angle_index_offset(cascade: u32, angle_index: u32) -> vec2u {
 }
 
 // dispatched per merged angle (merges multiple rays)
-// this is for cascade mN where N is the last one, and it runs first,
+// this is for cascade cN where N is the last one, and it runs first,
 // since cascades are merged from N first to 0 last.
 @compute @workgroup_size(8, 8, 1)
-fn cascades_merge_Nmax(@builtin(global_invocation_id) invocation_id: vec3u) {
+fn cascades_cmax(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
     let this_merge = direction_first_merged_angle(params.cascade, output_location);
 
@@ -134,8 +134,9 @@ fn cascades_merge_Nmax(@builtin(global_invocation_id) invocation_id: vec3u) {
 }
 
 // dispatched per merged angle (merges multiple rays)
+// traces and merges for cascades max-1 to 1
 @compute @workgroup_size(8, 8, 1)
-fn cascades_merge_m1(@builtin(global_invocation_id) invocation_id: vec3u) {
+fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
     let this_merge = direction_first_merged_angle(params.cascade, output_location);
 
@@ -213,7 +214,7 @@ fn cascades_merge_m1(@builtin(global_invocation_id) invocation_id: vec3u) {
 
 // converts the last few angles into displayable lit(ish) pixels
 @compute @workgroup_size(8, 8, 1)
-fn cascades_merge_m0(@builtin(global_invocation_id) invocation_id: vec3u) {
+fn cascades_c0(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
 
     let angles_stride = direction_first_merged_angles_stride(0u);
