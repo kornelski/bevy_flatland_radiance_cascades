@@ -1,17 +1,21 @@
-# Flatland Radiance Cascades — very vanilla implementation
+# Flatland Radiance Cascades
 
-Simulates lights in 2D scenes, with soft shadows.
+Simulates lights in 2D scenes, with soft shadows. It's a very unpolished implementation in Rust/Bevy.
 
-Unfinished, buggy. I'm a noob in shader graphics, and don't quite know what I'm doing. Based on Rust/Bevy.
+It's based on the [radiance cascades paper][paper], but with a much improved storage layout:
 
- - it implements "pre-averaging", although the trace step is still separate
- - no bilinear fix
- - no mipmaps
- - no SDFs even (naively marches density map)
- - no bounce light (can this even work without SDFs?)
- - 2x ray growth factor, not 4x, because that's what the paper promised!
+ - It uses _pre-averaging_, so that results of tracing of individual rays don't need to be stored, and cascades store only merged average of a cone needed for the next cascade.
+ - It uses _direction-first_ storage to be able to merge probes using hardware filtering (the hw part is not implemented yet).
 
-See `src/cascades.rs` and `cascades_*.wgsl` shaders in `assets/`.
+See `src/cascades.rs` and `assets/radiance_cascades.wgsl`.
+
+This implementation is different than most other examples:
+
+ - It uses a "gear fix" workaround to reduce halos at the seams between cascades (instead of "bilinear fix").
+ - It uses a 2x scaling factor for the lenghts of cascades and the number of rays (most use much more expensive 4x scaling).
+ - It doesn't use SDFs (it naively marches density map).
+ - it doesn't use mipmaps (yet).
+ - There's no bounce light implemented yet.
 
 ## Links
 
