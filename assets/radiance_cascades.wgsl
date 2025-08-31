@@ -69,10 +69,6 @@ fn merged_angle_index_offset(cascade: u32, angle_index: u32) -> vec2u {
     let angles_stride = direction_first_merged_angles_stride(cascade);
 
     let num_angles = globals.initial_angles << (cascade * BRANCHING_FACTOR);
-    // shouldn't happen
-    if angle_index >= num_angles {
-        return vec2u(-1i);
-    }
 
     let num_angles_sqrt = merge_num_angles_side_len(cascade);
     return angles_stride * vec2u(
@@ -87,6 +83,9 @@ fn merged_angle_index_offset(cascade: u32, angle_index: u32) -> vec2u {
 @compute @workgroup_size(8, 8, 1)
 fn cascades_cmax(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
+    if any(output_location >= textureDimensions(cascade_merge_output)) {
+        return;
+    }
     let this_merge = direction_first_merged_angle(params.cascade, output_location);
 
     // shouldn't happen? in debug that's junk between data points
@@ -138,6 +137,9 @@ fn cascades_cmax(@builtin(global_invocation_id) invocation_id: vec3u) {
 @compute @workgroup_size(8, 8, 1)
 fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
+    if any(output_location >= textureDimensions(cascade_merge_output)) {
+        return;
+    }
     let this_merge = direction_first_merged_angle(params.cascade, output_location);
 
     // shouldn't happen?
@@ -150,9 +152,6 @@ fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
     // -1 and rounding picks top-left corner that may be above or left
     let next_probe_index = (vec2i(this_merge.probe_index) - 1i) / 2;
     let next_num_probes = vec2i((globals.world_size / globals.initial_spacing) >> vec2(params.cascade + 1u));
-    if any(next_probe_index+vec2(1i) >= next_num_probes) {
-        return;
-    }
 
     // cascades are never perfectly aligned
     let blend = vec2f(
@@ -177,8 +176,7 @@ fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
         let cascade_angle_index = j + this_merge.merged_angle_index * this_merge.unmerged_angle_ratio;
 
         if cascade_angle_index >= next_num_angles {
-            textureStore(cascade_merge_output, output_location, vec4f(0.));
-            return;
+            continue;
         }
 
         // it's +, because direction-first
@@ -194,7 +192,6 @@ fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
         // - then the second time to rescale it from ray of cascade with more rays to ray of cascade with fewer rays
         // - and then will be divided for the third time when this cascade gets pre-averaged. It sounds dodgy, but I think it's right.
         let from_next = (
-            // TODO: bounds check?
             // direction-first storage means they definitely are next to each other
             blend_0 * textureLoad(cascade_merge_input, next_probe_location).rgb +
             blend_1 * textureLoad(cascade_merge_input, next_probe_location + vec2i(1, 0)).rgb +
@@ -216,14 +213,16 @@ fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
 @compute @workgroup_size(8, 8, 1)
 fn cascades_c0(@builtin(global_invocation_id) invocation_id: vec3u) {
     let output_location = invocation_id.xy;
+    let output_resolution = textureDimensions(cascade_merge_output);
+    if any(output_location >= output_resolution) {
+        return;
+    }
 
     let angles_stride = direction_first_merged_angles_stride(0u);
     let num_angles_sqrt = merge_num_angles_side_len(0u);
 
     let num_probes_0 = globals.world_size / globals.initial_spacing;
-    let num_angles = globals.initial_angles << (params.cascade * BRANCHING_FACTOR);
 
-    let output_resolution = textureDimensions(cascade_merge_output);
     let probe_index = vec2u(vec2f(output_location) / vec2f(output_resolution) * vec2f(num_probes_0));
 
     var combined = vec4f(0.);
