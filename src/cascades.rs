@@ -12,6 +12,8 @@ use std::array;
 use crate::render::extract_component::ExtractComponentPlugin;
 use crate::MousePosition;
 use crate::render::renderer::RenderQueue;
+use bevy::ecs::component::HookContext;
+use bevy::ecs::world::DeferredWorld;
 use bevy::prelude::*;
 use bevy::render::extract_component::ExtractComponent;
 use bevy::render::render_resource::binding_types::{texture_storage_2d, uniform_buffer};
@@ -120,7 +122,7 @@ impl Plugin for CascadesComputePlugin {
         app.add_plugins(ExtractComponentPlugin::<CascadesBuffersComponent>::default());
 
         // this is meant to support multiple instances, although currently barely one works
-        app.add_systems(PostUpdate, attach_buffers_to_settings);
+        app.world_mut().register_component_hooks::<CascadesSettingsComponent>().on_add(attach_buffers_to_settings);
 
         let render_app = app.sub_app_mut(render::RenderApp);
 
@@ -299,48 +301,38 @@ impl FromWorld for CascadesRenderPipeline {
 
 /// In Bevy it's enough to create `CascadesSettingsComponent` instance,
 /// and this will find it and alloc everything else for it.
-/// TODO: this should use new Bevy observers?
-fn attach_buffers_to_settings(mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    missing_buffers: Query<(Entity, &CascadesSettingsComponent), Without<CascadesBuffersComponent>>,
-) {
-    if missing_buffers.is_empty() {
-        return;
-    }
+fn attach_buffers_to_settings(mut world: DeferredWorld<'_>, HookContext { entity, .. }: HookContext) {
+    let settings = *world.get::<CascadesSettingsComponent>(entity).unwrap();
+    let buffer_size = (0..NUM_CASCADES as u32).map(|c| {
+        let m = buffer_sizes(c, &settings);
+        let size = m.num_probes * m.num_angles_sqrt;
+        eprintln!("buffer for c{c}; {:?} probes * {}^2 = {size:?}", m.num_probes, m.num_angles_sqrt);
+        size
+    }).fold(UVec2::new(0,0), |max, m| {
+        max.max(m)
+    });
 
-    let images = &mut *images; // ResMut
-    for (entity, settings) in missing_buffers.iter() {
-        let buffer_size = (0..NUM_CASCADES as u32).map(|c| {
-            let m = buffer_sizes(c, settings);
-            let size = m.num_probes * m.num_angles_sqrt;
-            eprintln!("buffer for c{c}; {:?} probes * {}^2 = {size:?}", m.num_probes, m.num_angles_sqrt);
-            size
-        }).fold(UVec2::new(0,0), |max, m| {
-            max.max(m)
-        });
-
-        // one of these could be smaller for cascade 1+ only.
-        let buffers = array::from_fn(|_| {
-            let mut img = Image::new(
-                Extent3d {
-                    width: buffer_size.x,
-                    height: buffer_size.y,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                vec![0; (16 * buffer_size.x * buffer_size.y) as usize],
-                TextureFormat::Rgba32Float,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            // texture binding is for a preview only
-            img.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
-            images.add(img)
-        });
-
-        commands.entity(entity).insert(CascadesBuffersComponent {
-            buffers,
-        });
-    }
+    let images = &mut *world.resource_mut::<Assets<Image>>();
+    // one of these could be smaller for cascade 1+ only.
+    let buffers = array::from_fn(|_| {
+        let mut img = Image::new(
+            Extent3d {
+                width: buffer_size.x,
+                height: buffer_size.y,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![0; (16 * buffer_size.x * buffer_size.y) as usize],
+            TextureFormat::Rgba32Float,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        // texture binding is for a preview only
+        img.texture_descriptor.usage = TextureUsages::COPY_DST | TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING;
+        images.add(img)
+    });
+    world.commands().entity(entity).insert(CascadesBuffersComponent {
+        buffers,
+    });
 }
 
 // Bevy has this weird thing where the normal world can't talk to the GPU,
