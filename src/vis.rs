@@ -2,8 +2,9 @@
 //
 use bevy::input::{mouse::MouseButtonInput, ButtonState};
 use bevy::prelude::*;
+use bevy::render::mesh::Mesh2d;
 use bevy::render::render_resource::*;
-use bevy::sprite::{Material2d, Material2dPlugin, MaterialMesh2dBundle, Mesh2dHandle};
+use bevy::sprite::{Material2d, Material2dPlugin, MeshMaterial2d};
 use bevy::window::{PrimaryWindow, WindowResized};
 use crate::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use crate::WINDOW_SIZE;
@@ -27,18 +28,19 @@ impl<M: Material2d> Plugin for QuickAndDirtyBufferPreviewMaterial<M> {
 }
 
 impl<M: Material2d> QuickAndDirtyBufferPreviewMaterial<M> {
-    fn add_meshes(mut commands: Commands, grid: Res<Grid>, added: Query<(Entity, &QuickAndDirtyBufferPreviewSettings, &Handle<M>), Without<Mesh2dHandle>>, windows: Query<&Window, With<PrimaryWindow>>, rect: Res<RectMesh>) {
+    fn add_meshes(
+        mut commands: Commands, grid: Res<Grid>, added: Query<(Entity, &QuickAndDirtyBufferPreviewSettings, &MeshMaterial2d<M>), Without<Mesh2d>>,
+        windows: Query<&Window, With<PrimaryWindow>>, rect: Res<RectMesh>,
+    ) {
         let win = windows.single();
         let w = win.resolution.width() as f32;
         let h = win.resolution.height() as f32;
 
-        for (e, s, vis) in &added {
-            commands.entity(e).insert(MaterialMesh2dBundle {
-                mesh: rect.rect.clone(),
-                transform: s.transform(*grid, w, h),
-                material: vis.clone(),
-                ..default()
-            });
+        for (e, s, _vis) in &added {
+            commands.entity(e).insert((
+                Mesh2d(rect.rect.clone()),
+                Transform::from(s.transform(*grid, w, h)),
+            ));
         }
     }
 }
@@ -94,7 +96,7 @@ pub(crate) struct QuickAndDirtyBufferPreviewSettings {
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct PreviewMaterial {
     #[texture(0, visibility(fragment))]
-    #[sampler(1, visibility(fragment), sampler_type="filtering")]
+    #[sampler(1, visibility(fragment), sampler_type = "filtering")]
     pub texture: Handle<Image>,
     #[uniform(2, visibility(fragment))]
     pub mode: u32,
@@ -108,13 +110,13 @@ impl Material2d for PreviewMaterial {
 
 #[derive(Resource)]
 struct RectMesh {
-    rect: Mesh2dHandle
+    rect: Handle<Mesh>,
 }
 
 impl FromWorld for RectMesh {
     fn from_world(world: &mut World) -> Self {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
-        RectMesh { rect: Mesh2dHandle(meshes.add(Rectangle::new(1., 1.))) }
+        RectMesh { rect: meshes.add(Rectangle::new(1., 1.)) }
     }
 }
 

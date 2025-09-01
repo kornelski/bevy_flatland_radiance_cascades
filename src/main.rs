@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::render;
+use bevy::sprite::MeshMaterial2d;
 
 const WINDOW_SIZE: UVec2 = UVec2::new(1920, 1080);
 
@@ -8,7 +9,6 @@ use cascades::*;
 
 mod vis;
 use vis::*;
-
 
 fn main() {
     App::new()
@@ -37,7 +37,7 @@ fn main() {
 }
 
 fn init(mut commands: Commands) {
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera2d);
 
     commands.spawn(CascadesSettingsComponent {
         size: WINDOW_SIZE,
@@ -56,20 +56,18 @@ fn auto_init_vis_buffers(mut commands: Commands,
     for (entity, buffers) in &buffers {
         commands.entity(entity).insert(QuickAndDirtyPreviewAddedMarker);
 
-        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 0 , y: 0 },
-            materials.add(PreviewMaterial {
+        commands.spawn(QuickAndDirtyBufferPreviewSettings { x: 0, y: 0 })
+            .insert(MeshMaterial2d(materials.add(PreviewMaterial {
                 // debug view of merged cascades
                 texture: buffers.buffers[1].clone_weak(),
                 mode: 1,
-            }),
-        ));
+            })));
 
-        commands.spawn((QuickAndDirtyBufferPreviewSettings { x: 1 , y: 0 },
-            materials.add(PreviewMaterial {
+        commands.spawn(QuickAndDirtyBufferPreviewSettings { x: 1, y: 0 })
+            .insert(MeshMaterial2d(materials.add(PreviewMaterial {
                 // debug view of merged cascades
                 texture: buffers.buffers[0].clone_weak(),
                 mode: 0,
-            }),
-        ));
+            })));
     }
 }

@@ -135,7 +135,7 @@ impl Plugin for CascadesComputePlugin {
         let render_world = render_app.world_mut();
         let cascades_node = CascadesRenderNode {
             ready: false,
-            view_query: render_world.query_filtered()
+            view_query: render_world.query_filtered(),
         };
         let mut render_graph = render_world.resource_mut::<RenderGraph>();
         render_graph.add_node(CascadesRenderLabel, cascades_node);
@@ -176,8 +176,8 @@ fn render_app_prepare_cascades_settings_uniforms(
     };
 
     // copy cascade settings from Bevy-land to the uniforms in shaders
-    let delta_time = time.delta_seconds();
-    let time = time.elapsed_seconds_wrapped();
+    let delta_time = time.delta_secs();
+    let time = time.elapsed_secs_wrapped();
 
     for (entity, cascades_settings) in targets.iter() {
         let world_size = Vec2::new(cascades_settings.size.x as f32, cascades_settings.size.y as f32);
@@ -250,6 +250,7 @@ impl FromWorld for CascadesRenderPipeline {
             push_constant_ranges: Vec::new(),
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
+            zero_initialize_workgroup_memory: false,
         });
         let pipeline_c1 = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("cascades_c1".into()),
@@ -258,6 +259,7 @@ impl FromWorld for CascadesRenderPipeline {
             push_constant_ranges: Vec::new(),
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
+            zero_initialize_workgroup_memory: false,
         });
         let pipeline_cmax = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("cascades_cmax".into()),
@@ -266,6 +268,7 @@ impl FromWorld for CascadesRenderPipeline {
             push_constant_ranges: Vec::new(),
             shader,
             shader_defs,
+            zero_initialize_workgroup_memory: false,
         });
 
         // settings are per instance of the simulation (globals), params are per dispatch or individual cascade level
