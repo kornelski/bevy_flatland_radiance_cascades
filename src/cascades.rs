@@ -335,13 +335,10 @@ fn attach_buffers_to_settings(mut world: DeferredWorld<'_>, HookContext { entity
     });
 }
 
-// Bevy has this weird thing where the normal world can't talk to the GPU,
-// and the GPU part has no persistent state,
-// so a bunch of things has to be redundantly recreated ;(
+// Bevy has this weird thing where the normal world can't talk to the GPU
 fn render_app_prepare_bind_groups(
     mut commands: Commands,
     gpu_images: Res<RenderAssets<GpuImage>>,
-    // `Without` here sucks, because it's the render world, so it's perishable
     mut buffers: Query<(Entity, &mut CascadesBuffersComponent), Without<CascadesRenderImagesBindGroupsComponent>>,
     render_device: Res<RenderDevice>,
     pipeline: Res<CascadesRenderPipeline>,

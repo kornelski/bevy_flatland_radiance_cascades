@@ -32,7 +32,9 @@ impl<M: Material2d> QuickAndDirtyBufferPreviewMaterial<M> {
         mut commands: Commands, grid: Res<Grid>, added: Query<(Entity, &QuickAndDirtyBufferPreviewSettings, &MeshMaterial2d<M>), Without<Mesh2d>>,
         windows: Query<&Window, With<PrimaryWindow>>, rect: Res<RectMesh>,
     ) {
-        let win = windows.single().unwrap();
+        let Ok(win) = windows.single() else {
+            return;
+        };
         let w = win.resolution.width() as f32;
         let h = win.resolution.height() as f32;
 
