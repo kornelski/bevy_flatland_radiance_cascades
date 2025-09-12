@@ -84,9 +84,12 @@ pub struct CascadesRenderSettingsUniformOffsetComponent(u32);
 /// Fed into uniforms. It was meant to (pre)compute more of the cascade properties,
 /// but the shaders do that for now.
 #[derive(ShaderType)]
-struct CascadesParamsUniform {
+struct CascadesParams {
     cascade: u32,
     steps: u32,
+    merge_num_angles_side_len: u32,
+    next_cascade_merge_num_angles_side_len: u32,
+    direction_first_merged_angles_stride: UVec2,
 }
 
 #[derive(Resource)]
@@ -224,12 +227,12 @@ impl FromWorld for CascadesRenderPipeline {
         ];
 
         // per-cascade settings will be sent as push constants
-        CascadesParamsUniform::assert_uniform_compat();
-        debug_assert_eq!(CascadesParamsUniform::min_size().get(), std::mem::size_of::<CascadesParamsUniform>() as u64);
+        CascadesParams::assert_uniform_compat();
+        debug_assert_eq!(CascadesParams::min_size().get(), std::mem::size_of::<CascadesParams>() as u64);
         let push_constant_ranges = vec![
             PushConstantRange {
                 stages: ShaderStages::COMPUTE,
-                range: 0..CascadesParamsUniform::min_size().get().try_into().unwrap(),
+                range: 0..CascadesParams::min_size().get().try_into().unwrap(),
             }
         ];
 
@@ -416,11 +419,7 @@ impl render_graph::Node for CascadesRenderNode {
                 pass.set_pipeline(if first_merge { first_merge = false; pipeline_cmax } else { pipeline_c1 });
                 pass.set_bind_group(0, &settings_bind, &[uniform_offset.0]);
                 pass.set_bind_group(1, &buffers_bind.bind_groups[((cascade) & 1) as usize] , &[]);
-                set_push_constants::<{ std::mem::size_of::<CascadesParamsUniform>() }, _>(&mut pass, &CascadesParamsUniform {
-                    cascade,
-                    // pow 0.75 so it doesn't grow linearly with length
-                    steps: ((INITIAL_ANGLES as f32) * 2f32.powf(cascade as f32) * 0.7).ceil() as u32,
-                });
+                set_push_constants::<{ std::mem::size_of::<CascadesParams>() }, _>(&mut pass, &CascadesParams::new(cascade, settings));
                 let msize = buffer_sizes(cascade, settings);
                 let dispatch = (msize.num_probes * msize.num_angles_sqrt + (WORKGROUP_SIZE-1)) / WORKGROUP_SIZE;
                 pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
@@ -428,6 +427,7 @@ impl render_graph::Node for CascadesRenderNode {
 
             pass.set_pipeline(pipeline_c0);
             pass.set_bind_group(1, &buffers_bind.bind_groups[1], &[]);
+            set_push_constants::<{ std::mem::size_of::<CascadesParams>() }, _>(&mut pass, &CascadesParams::new(0, settings));
             let msize = buffer_sizes(0, settings);
             let dispatch = (msize.num_probes * msize.num_angles_sqrt + (WORKGROUP_SIZE-1)) / WORKGROUP_SIZE;
             pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
@@ -435,6 +435,25 @@ impl render_graph::Node for CascadesRenderNode {
 
         Ok(())
     }
+}
+
+impl CascadesParams {
+    pub fn new(cascade: u32, settings: &CascadesSettingsComponent) -> Self {
+        Self {
+           cascade,
+           // pow 0.75 so it doesn't grow linearly with length
+           steps: ((INITIAL_ANGLES as f32) * 2f32.powf(cascade as f32) * 0.7).ceil() as u32,
+           merge_num_angles_side_len: merge_num_angles_side_len(cascade),
+           next_cascade_merge_num_angles_side_len: merge_num_angles_side_len(cascade+1),
+           direction_first_merged_angles_stride: (settings.size / INITIAL_SPACING) >> cascade,
+       }
+    }
+}
+
+/// merging arranges angle indexes in a square.
+/// not all num_angles square cleanly, and the len is not always a power of 2
+fn merge_num_angles_side_len(cascade: u32) -> u32 {
+    ((INITIAL_ANGLES << (cascade * BRANCHING_FACTOR)) as f32).sqrt().ceil() as u32
 }
 
 fn set_push_constants<const SIZE: usize, T: ShaderType + bevy::render::render_resource::encase::private::WriteInto>(pass: &mut ComputePass<'_>, data: &T) {
@@ -450,7 +469,7 @@ struct BufferSizes {
 }
 
 fn buffer_sizes(cascade: u32, settings: &CascadesSettingsComponent) -> BufferSizes {
-    let num_angles_sqrt = ((INITIAL_ANGLES << (cascade * BRANCHING_FACTOR)) as f32).sqrt().ceil() as u32;
+    let num_angles_sqrt = merge_num_angles_side_len(cascade);
     let num_probes = (settings.size / INITIAL_SPACING) >> cascade;
         // + (3 + cascade * 3); // hacky hack
     BufferSizes {

@@ -12,6 +12,9 @@ struct CascadesSettings {
 struct CascadesParams {
     cascade: u32,
     steps: u32,
+    merge_num_angles_side_len: u32,
+    next_cascade_merge_num_angles_side_len: u32,
+    direction_first_merged_angles_stride: vec2u,
 }
 
 @group(0) @binding(0) var<uniform> globals: CascadesSettings;
@@ -24,35 +27,27 @@ var<push_constant> params: CascadesParams;
 /// 1 gives doubling, 2 gives quadrupling.
 const BRANCHING_FACTOR: u32 = #{BRANCHING_FACTOR};
 
-/// merging arranges angle indexes in a square.
-/// not all num_angles square cleanly, and the len is not always a power of 2
-fn merge_num_angles_side_len(cascade: u32) -> u32 {
-    let num_angles = globals.initial_angles << (cascade * BRANCHING_FACTOR);
-    return u32(ceil(sqrt(f32(num_angles))));
-}
-
 struct MergedProbe {
     probe_index: vec2u,
     merged_angle_index: u32,
     unmerged_angle_ratio: u32,
 }
 
-fn direction_first_merged_angles_stride(cascade: u32) -> vec2u {
-    return ((globals.world_size / globals.initial_spacing) >> vec2(cascade));
-     // + (3 + cascade * 3); // hacky hack
+fn next_cascade_direction_first_merged_angles_stride() -> vec2u {
+    return params.direction_first_merged_angles_stride >> vec2u(1, 1);
 }
 
-fn direction_first_merged_angle(cascade: u32, invocation_id: vec2u) -> MergedProbe {
-    let angles_stride = direction_first_merged_angles_stride(cascade);
+fn direction_first_merged_angle(invocation_id: vec2u) -> MergedProbe {
+    let angles_stride = params.direction_first_merged_angles_stride;
     // angles are space-adjacent for every probe
     let probe_index = invocation_id % angles_stride;
 
-    let max_index = (globals.world_size / globals.initial_spacing) >> vec2u(cascade);
+    let max_index = (globals.world_size / globals.initial_spacing) >> vec2u(params.cascade);
     if any(probe_index >= max_index) {
         return MergedProbe(vec2u(-1i), u32(-1i), 0);
     }
 
-    let num_angles_sqrt = merge_num_angles_side_len(cascade);
+    let num_angles_sqrt = params.merge_num_angles_side_len;
     // angles are stored in a square, so the underlying buffer keeps screen's aspect ratio
     let merged_angle_xy = invocation_id / angles_stride;
     if any(merged_angle_xy >= vec2(num_angles_sqrt)) {
@@ -64,12 +59,12 @@ fn direction_first_merged_angle(cascade: u32, invocation_id: vec2u) -> MergedPro
     return MergedProbe(probe_index, merged_angle_index, unmerged_angle_ratio);
 }
 
-fn merged_angle_index_offset(cascade: u32, angle_index: u32) -> vec2u {
-    let angles_stride = direction_first_merged_angles_stride(cascade);
+fn next_cascade_merged_angle_index_offset(angle_index: u32) -> vec2u {
+    let angles_stride = next_cascade_direction_first_merged_angles_stride();
 
-    let num_angles = globals.initial_angles << (cascade * BRANCHING_FACTOR);
+    let num_angles = globals.initial_angles << ((params.cascade+1) * BRANCHING_FACTOR);
 
-    let num_angles_sqrt = merge_num_angles_side_len(cascade);
+    let num_angles_sqrt = params.next_cascade_merge_num_angles_side_len;
     return angles_stride * vec2u(
         angle_index % num_angles_sqrt, // can't &-1, not a power of 2
         angle_index / num_angles_sqrt,
@@ -85,7 +80,7 @@ fn cascades_cmax(@builtin(global_invocation_id) invocation_id: vec3u) {
     if any(output_location >= textureDimensions(cascade_merge_output)) {
         return;
     }
-    let this_merge = direction_first_merged_angle(params.cascade, output_location);
+    let this_merge = direction_first_merged_angle(output_location);
 
     // shouldn't happen? in debug that's junk between data points
     if this_merge.unmerged_angle_ratio == 0 {
@@ -139,7 +134,7 @@ fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
     if any(output_location >= textureDimensions(cascade_merge_output)) {
         return;
     }
-    let this_merge = direction_first_merged_angle(params.cascade, output_location);
+    let this_merge = direction_first_merged_angle(output_location);
 
     // shouldn't happen?
     if this_merge.unmerged_angle_ratio == 0 {
@@ -179,7 +174,7 @@ fn cascades_c1(@builtin(global_invocation_id) invocation_id: vec3u) {
         }
 
         // it's +, because direction-first
-        let next_probe_location = next_probe_index + vec2i(merged_angle_index_offset(params.cascade+1, cascade_angle_index));
+        let next_probe_location = next_probe_index + vec2i(next_cascade_merged_angle_index_offset(cascade_angle_index));
 
         // from_next represents a fraction of next cascade's num rays,
         // and traced represents a fraction of this cascade's num rays,
@@ -217,16 +212,14 @@ fn cascades_c0(@builtin(global_invocation_id) invocation_id: vec3u) {
         return;
     }
 
-    let angles_stride = direction_first_merged_angles_stride(0u);
-    let num_angles_sqrt = merge_num_angles_side_len(0u);
-
     let num_probes_0 = globals.world_size / globals.initial_spacing;
 
     let probe_index = vec2u(vec2f(output_location) / vec2f(output_resolution) * vec2f(num_probes_0));
 
     var combined = vec4f(0.);
+    let num_angles_sqrt = params.merge_num_angles_side_len;
     for(var angle_index = 0u; angle_index < globals.initial_angles; angle_index += 1u) {
-        let angle_offset = angles_stride * vec2u(
+        let angle_offset = params.direction_first_merged_angles_stride * vec2u(
             angle_index % num_angles_sqrt,
             angle_index / num_angles_sqrt,
         );
