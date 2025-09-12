@@ -1,4 +1,4 @@
-struct CascadesGlobals {
+struct CascadesSettings {
     num_cascades: u32,
     initial_angles: u32,
     initial_spacing: u32,
@@ -14,8 +14,8 @@ struct CascadesParams {
     steps: u32,
 }
 
-@group(0) @binding(0) var<uniform> globals: CascadesGlobals;
-@group(0) @binding(1) var<uniform> params: CascadesParams;
+@group(0) @binding(0) var<uniform> globals: CascadesSettings;
+var<push_constant> params: CascadesParams;
 
 @group(1) @binding(0) var cascade_merge_output: texture_storage_2d<rgba32float, write>;
 @group(1) @binding(1) var cascade_merge_input: texture_storage_2d<rgba32float, read>;

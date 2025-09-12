@@ -99,12 +99,6 @@ struct CascadesRenderPipeline {
     /// The GPU buffer that stores the [`CascadesSettingsUniform`] data.
     settings_shared_uniforms_buffer: DynamicUniformBuffer<CascadesSettingsUniform>,
 
-    /// Configuring each cascade
-    params_shared_template: Vec<CascadesParamsUniform>,
-    /// copying from template to GPU
-    params_shared_uniforms_buffer: DynamicUniformBuffer<CascadesParamsUniform>,
-    params_shared_uniforms_buffer_offsets: [u32; NUM_CASCADES],
-
     /// Merge N+1 into N
     pipeline_c1: CachedComputePipelineId,
     /// Cascade 0 gets special treatment
@@ -203,19 +197,6 @@ fn render_app_prepare_cascades_settings_uniforms(
     }
     drop(writer);
 
-    // this getting cleared is annoying
-    debug_assert!(pipeline.params_shared_uniforms_buffer.is_empty());
-    let Some(mut writer) = pipeline.params_shared_uniforms_buffer.get_writer(
-        pipeline.params_shared_template.len(),
-        &render_device,
-        &render_queue,
-    ) else {
-        panic!("cascades pipeline not ready");
-    };
-    for (c, offset) in pipeline.params_shared_template.iter().zip(&mut pipeline.params_shared_uniforms_buffer_offsets) {
-        *offset = writer.write(c);
-    }
-    drop(writer);
 }
 
 impl FromWorld for CascadesRenderPipeline {
@@ -224,11 +205,9 @@ impl FromWorld for CascadesRenderPipeline {
         let pipeline_cache = world.resource::<PipelineCache>();
 
         // prepare stuff for bind groups
-
         let group0_layout = render_device.create_bind_group_layout("g0",
             &BindGroupLayoutEntries::sequential(ShaderStages::COMPUTE, (
                 uniform_buffer::<CascadesSettingsUniform>(true),
-                uniform_buffer::<CascadesParamsUniform>(true),
             )),
         );
 
@@ -244,12 +223,22 @@ impl FromWorld for CascadesRenderPipeline {
             ShaderDefVal::UInt("BRANCHING_FACTOR".into(), BRANCHING_FACTOR),
         ];
 
+        // per-cascade settings will be sent as push constants
+        CascadesParamsUniform::assert_uniform_compat();
+        debug_assert_eq!(CascadesParamsUniform::min_size().get(), std::mem::size_of::<CascadesParamsUniform>() as u64);
+        let push_constant_ranges = vec![
+            PushConstantRange {
+                stages: ShaderStages::COMPUTE,
+                range: 0..CascadesParamsUniform::min_size().get().try_into().unwrap(),
+            }
+        ];
+
         let shader = world.load_asset("radiance_cascades.wgsl");
         let pipeline_c0 = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
             label: Some("cascades_c0".into()),
             entry_point: "cascades_c0".into(),
             layout: vec![group0_layout.clone(), group1_layout.clone()],
-            push_constant_ranges: Vec::new(),
+            push_constant_ranges: push_constant_ranges.clone(),
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
             zero_initialize_workgroup_memory: false,
@@ -258,7 +247,7 @@ impl FromWorld for CascadesRenderPipeline {
             label: Some("cascades_c1".into()),
             entry_point: "cascades_c1".into(),
             layout: vec![group0_layout.clone(), group1_layout.clone()],
-            push_constant_ranges: Vec::new(),
+            push_constant_ranges: push_constant_ranges.clone(),
             shader: shader.clone(),
             shader_defs: shader_defs.clone(),
             zero_initialize_workgroup_memory: false,
@@ -267,7 +256,7 @@ impl FromWorld for CascadesRenderPipeline {
             label: Some("cascades_cmax".into()),
             entry_point: "cascades_cmax".into(),
             layout: vec![group0_layout.clone(), group1_layout.clone()],
-            push_constant_ranges: Vec::new(),
+            push_constant_ranges,
             shader,
             shader_defs,
             zero_initialize_workgroup_memory: false,
@@ -276,20 +265,10 @@ impl FromWorld for CascadesRenderPipeline {
         // settings are per instance of the simulation (globals), params are per dispatch or individual cascade level
         let mut settings_shared_uniforms_buffer = DynamicUniformBuffer::default();
         settings_shared_uniforms_buffer.set_label(Some("settings"));
-        let mut params_shared_uniforms_buffer = DynamicUniformBuffer::default();
-        params_shared_uniforms_buffer.set_label(Some("params"));
 
-        let params_shared_template = (0..NUM_CASCADES as u32).map(|cascade| {
-            // pow 0.75 so it doesn't grow linearly with length
-            let steps = ((INITIAL_ANGLES as f32) * 2f32.powf(cascade as f32) * 0.7).ceil() as u32;
-            CascadesParamsUniform { cascade, steps }
-        }).collect();
 
         CascadesRenderPipeline {
             settings_shared_uniforms_buffer,
-            params_shared_template,
-            params_shared_uniforms_buffer,
-            params_shared_uniforms_buffer_offsets: [0; NUM_CASCADES],
             group0_layout,
             group1_layout,
             pipeline_c1,
@@ -418,7 +397,6 @@ impl render_graph::Node for CascadesRenderNode {
             &pipeline.group0_layout,
             &BindGroupEntries::sequential((
                 &pipeline.settings_shared_uniforms_buffer,
-                &pipeline.params_shared_uniforms_buffer,
             )),
         );
 
@@ -434,11 +412,16 @@ impl render_graph::Node for CascadesRenderNode {
 
         for (buffers_bind, uniform_offset, settings) in self.view_query.iter_manual(render_world) {
             let mut first_merge = true;
-            for (params, params_offset) in pipeline.params_shared_template.iter().zip(pipeline.params_shared_uniforms_buffer_offsets).rev() {
+            for cascade in (0..NUM_CASCADES as u32).rev() {
                 pass.set_pipeline(if first_merge { first_merge = false; pipeline_cmax } else { pipeline_c1 });
-                pass.set_bind_group(0, &settings_bind, &[uniform_offset.0, params_offset]);
-                pass.set_bind_group(1, &buffers_bind.bind_groups[((params.cascade) & 1) as usize] , &[]);
-                let msize = buffer_sizes(params.cascade, settings);
+                pass.set_bind_group(0, &settings_bind, &[uniform_offset.0]);
+                pass.set_bind_group(1, &buffers_bind.bind_groups[((cascade) & 1) as usize] , &[]);
+                set_push_constants::<{ std::mem::size_of::<CascadesParamsUniform>() }, _>(&mut pass, &CascadesParamsUniform {
+                    cascade,
+                    // pow 0.75 so it doesn't grow linearly with length
+                    steps: ((INITIAL_ANGLES as f32) * 2f32.powf(cascade as f32) * 0.7).ceil() as u32,
+                });
+                let msize = buffer_sizes(cascade, settings);
                 let dispatch = (msize.num_probes * msize.num_angles_sqrt + (WORKGROUP_SIZE-1)) / WORKGROUP_SIZE;
                 pass.dispatch_workgroups(dispatch.x, dispatch.y, 1);
             }
@@ -452,6 +435,13 @@ impl render_graph::Node for CascadesRenderNode {
 
         Ok(())
     }
+}
+
+fn set_push_constants<const SIZE: usize, T: ShaderType + bevy::render::render_resource::encase::private::WriteInto>(pass: &mut ComputePass<'_>, data: &T) {
+    use bevy::render::render_resource::encase::internal::Writer;
+    let mut tmp = [0u8; SIZE];
+    data.write_into(&mut Writer::new(&data, &mut tmp, 0).unwrap());
+    pass.set_push_constants(0, &tmp);
 }
 
 struct BufferSizes {
