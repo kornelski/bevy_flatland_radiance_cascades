@@ -9,6 +9,7 @@
 /// - no proper bounce light (can this even work without SDFs?)
 
 use std::array;
+use std::f32::consts::TAU;
 use crate::render::extract_component::ExtractComponentPlugin;
 use crate::MousePosition;
 use crate::render::renderer::RenderQueue;
@@ -87,9 +88,19 @@ pub struct CascadesRenderSettingsUniformOffsetComponent(u32);
 struct CascadesParams {
     cascade: u32,
     steps: u32,
-    merge_num_angles_side_len: u32,
+
+    unmerged_angle_ratio: u32,
+    // TAU / num_angles
+    next_cascade_angle_step: f32,
+
+    this_cascade_merge_num_angles_side_len: u32,
     next_cascade_merge_num_angles_side_len: u32,
-    direction_first_merged_angles_stride: UVec2,
+
+    ray_start: f32,
+    ray_end: f32,
+
+    this_cascade_direction_first_merged_angles_stride: UVec2,
+    next_cascade_direction_first_merged_angles_stride: UVec2,
 }
 
 #[derive(Resource)]
@@ -221,11 +232,6 @@ impl FromWorld for CascadesRenderPipeline {
             )),
         );
 
-        // naga_oil preprocessor
-        let shader_defs = vec![
-            ShaderDefVal::UInt("BRANCHING_FACTOR".into(), BRANCHING_FACTOR),
-        ];
-
         // per-cascade settings will be sent as push constants
         CascadesParams::assert_uniform_compat();
         debug_assert_eq!(CascadesParams::min_size().get(), std::mem::size_of::<CascadesParams>() as u64);
@@ -243,7 +249,7 @@ impl FromWorld for CascadesRenderPipeline {
             layout: vec![group0_layout.clone(), group1_layout.clone()],
             push_constant_ranges: push_constant_ranges.clone(),
             shader: shader.clone(),
-            shader_defs: shader_defs.clone(),
+            shader_defs: vec![],
             zero_initialize_workgroup_memory: false,
         });
         let pipeline_c1 = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
@@ -252,7 +258,7 @@ impl FromWorld for CascadesRenderPipeline {
             layout: vec![group0_layout.clone(), group1_layout.clone()],
             push_constant_ranges: push_constant_ranges.clone(),
             shader: shader.clone(),
-            shader_defs: shader_defs.clone(),
+            shader_defs: vec![],
             zero_initialize_workgroup_memory: false,
         });
         let pipeline_cmax = pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
@@ -261,14 +267,13 @@ impl FromWorld for CascadesRenderPipeline {
             layout: vec![group0_layout.clone(), group1_layout.clone()],
             push_constant_ranges,
             shader,
-            shader_defs,
+            shader_defs: vec![],
             zero_initialize_workgroup_memory: false,
         });
 
         // settings are per instance of the simulation (globals), params are per dispatch or individual cascade level
         let mut settings_shared_uniforms_buffer = DynamicUniformBuffer::default();
         settings_shared_uniforms_buffer.set_label(Some("settings"));
-
 
         CascadesRenderPipeline {
             settings_shared_uniforms_buffer,
@@ -439,13 +444,28 @@ impl render_graph::Node for CascadesRenderNode {
 
 impl CascadesParams {
     pub fn new(cascade: u32, settings: &CascadesSettingsComponent) -> Self {
+        let num_angles = INITIAL_ANGLES << (cascade * BRANCHING_FACTOR);
+        let next_cascade_num_angles = INITIAL_ANGLES << ((cascade + 1) * BRANCHING_FACTOR);
+
+        let ray_start = if cascade > 0 { cascade_ray_end(cascade - 1) } else { 0 };
+        let ray_end = cascade_ray_end(cascade);
+        let interval_len = ray_end - ray_start;
+
         Self {
-           cascade,
-           // pow 0.75 so it doesn't grow linearly with length
-           steps: ((INITIAL_ANGLES as f32) * 2f32.powf(cascade as f32) * 0.7).ceil() as u32,
-           merge_num_angles_side_len: merge_num_angles_side_len(cascade),
-           next_cascade_merge_num_angles_side_len: merge_num_angles_side_len(cascade+1),
-           direction_first_merged_angles_stride: (settings.size / INITIAL_SPACING) >> cascade,
+            cascade,
+            steps: interval_len.min((interval_len + 10)/2),
+
+            unmerged_angle_ratio: next_cascade_num_angles / num_angles,
+            next_cascade_angle_step: TAU / next_cascade_num_angles as f32,
+
+            this_cascade_merge_num_angles_side_len: merge_num_angles_side_len(cascade),
+            next_cascade_merge_num_angles_side_len: merge_num_angles_side_len(cascade+1),
+
+            ray_start: ray_start as f32,
+            ray_end: ray_end as f32,
+
+            this_cascade_direction_first_merged_angles_stride: (settings.size / INITIAL_SPACING) >> cascade,
+            next_cascade_direction_first_merged_angles_stride: (settings.size / INITIAL_SPACING) >> (cascade + 1),
        }
     }
 }
@@ -454,6 +474,10 @@ impl CascadesParams {
 /// not all num_angles square cleanly, and the len is not always a power of 2
 fn merge_num_angles_side_len(cascade: u32) -> u32 {
     ((INITIAL_ANGLES << (cascade * BRANCHING_FACTOR)) as f32).sqrt().ceil() as u32
+}
+
+fn cascade_ray_end(cascade: u32) -> u32 {
+    BRANCHING_FACTOR * (INITIAL_ANGLES << (cascade))
 }
 
 fn set_push_constants<const SIZE: usize, T: ShaderType + bevy::render::render_resource::encase::private::WriteInto>(pass: &mut ComputePass<'_>, data: &T) {
