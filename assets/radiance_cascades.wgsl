@@ -2,7 +2,6 @@ struct CascadesGlobals {
     num_cascades: u32,
     initial_angles: u32,
     initial_spacing: u32,
-    branching_factor: u32,
     world_size: vec2u,
     time: f32,
     delta_time: f32,
